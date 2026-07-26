@@ -31,7 +31,7 @@ def _publish(event: dict) -> None:
     log.debug("event published: %s", event)
 
 
-def generate(req: GenerateRequest) -> Creative:
+def generate(req: GenerateRequest, tenant: str = "tenant_default") -> Creative:
     context.set_actor(req.creator_id)
     refs = store.get_references(req.creator_id, REFERENCE_FANOUT)
     brief = templates.render(req.creator_id, req.brief, refs[0].hook if refs else "")
@@ -46,6 +46,7 @@ def generate(req: GenerateRequest) -> Creative:
     c = Creative(
         item_id=new_id("i"),
         creator_id=req.creator_id,
+        tenant_id=tenant,
         caption=out["text"],
         hook=_hook(out["text"]),
         style_vector=sv,
@@ -59,13 +60,17 @@ def generate(req: GenerateRequest) -> Creative:
     c.created_at = datetime.now()
     cache.put(f"last:{c.creator_id}", c)
     repository.save_and_publish(c, _publish)  # persist + publish event
-    async_pipeline.post_generate(c.item_id)  # warm trending + notify
-    queue.enqueue(c.item_id)                 # also hand off to the background queue
+    async_pipeline.schedule_post_generate(c.item_id)  # warm trending + notify (off the request path)
+    queue.enqueue(c.item_id)                  # also hand off to the background queue
     return c
 
 
-def regenerate(req: RegenerateRequest) -> Creative:
+def regenerate(req: RegenerateRequest, tenant: str = "tenant_default") -> Creative:
     prev = store.get_item(req.item_id)
+    # Ownership check: a tenant may only regenerate its own items (closes the
+    # cross-tenant write / IDOR on this endpoint).
+    if prev.tenant_id is not None and prev.tenant_id != tenant:
+        raise PermissionError("item does not belong to this tenant")
     anchor = store._STYLE_ANCHOR.get(req.item_id, prev.style_vector)
     refs = store.get_references(req.creator_id, REFERENCE_FANOUT)
     base_brief = prev.brief or prev.caption  # re-use original intent, not the last output
@@ -82,6 +87,7 @@ def regenerate(req: RegenerateRequest) -> Creative:
     c = Creative(
         item_id=req.item_id,
         creator_id=req.creator_id,
+        tenant_id=prev.tenant_id or tenant,
         caption=out["text"],
         hook=_hook(out["text"]),
         style_vector=blended,

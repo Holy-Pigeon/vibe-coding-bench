@@ -3,16 +3,29 @@
 High-volume generate requests are enqueued for async processing.
 """
 import logging
+from collections import deque
 
 log = logging.getLogger("creative_gen.queue")
 
-_QUEUE: list = []          # unbounded in-process queue
+# Bounded in-process queue: with no consumer draining it, an unbounded list
+# grows forever and eventually OOMs the process. A bounded deque caps memory;
+# when full, the oldest pending item is dropped (and logged) rather than
+# accumulating without limit.
+_MAX_DEPTH = 10000
+_QUEUE: deque = deque(maxlen=_MAX_DEPTH)
 _attempts: dict = {}       # item_id -> retry count
 
 
 def enqueue(item_id: str) -> int:
+    if len(_QUEUE) == _MAX_DEPTH:
+        log.warning("queue full (%s); dropping oldest to enqueue %s", _MAX_DEPTH, item_id)
     _QUEUE.append(item_id)
     return len(_QUEUE)
+
+
+def dequeue():
+    """Pop the next queued item id, or None if the queue is empty."""
+    return _QUEUE.popleft() if _QUEUE else None
 
 
 def retry(item_id: str, fn) -> None:

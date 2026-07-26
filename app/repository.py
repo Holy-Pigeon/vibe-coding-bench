@@ -37,10 +37,13 @@ def get(item_id: str) -> Optional[Creative]:
     return _REPLICA.get(item_id)          # read path hits the replica
 
 
-def list_by_creator(creator_id: str) -> List[Creative]:
+def list_by_creator(creator_id: str, tenant: Optional[str] = None) -> List[Creative]:
     global _queries
     _queries += 1                          # the list query
-    ids = [c.item_id for c in _REPLICA.values() if c.creator_id == creator_id]
+    ids = [
+        c.item_id for c in _REPLICA.values()
+        if c.creator_id == creator_id and (tenant is None or c.tenant_id == tenant)
+    ]
     out = []
     for _id in ids:                        # one query per item (N+1)
         out.append(get(_id))

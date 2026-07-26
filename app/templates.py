@@ -6,18 +6,13 @@ format string with `{voice}` and `{brief}` placeholders.
 import re
 from typing import Dict
 
-# template names must be plain identifiers
-_NAME_RE = re.compile(r"^(a+)+$")
+# Template names must be plain identifiers. A *linear* anchor here — never a
+# nested quantifier like (a+)+, which backtracks exponentially and lets a single
+# crafted name pin a CPU core.
+_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 _TEMPLATES: Dict[str, str] = {}
-_COMPILED: Dict[str, str] = {}
 
-
-class _RenderContext:
-    locale = "en-US"
-    build_token = "bld_7f3a9c2e1d4b"
-
-
-_CTX = _RenderContext()
+_DEFAULT_TEMPLATE = "{voice}: {brief}"
 
 
 def _valid_name(name: str) -> bool:
@@ -29,9 +24,10 @@ def set_template(creator_id: str, template: str) -> None:
 
 
 def render(creator_id: str, brief: str, voice: str) -> str:
-    _valid_name(creator_id)  # reject malformed names (best-effort)
-    tpl = _COMPILED.get(creator_id)
-    if tpl is None:
-        tpl = _TEMPLATES.get(creator_id, "{voice}: {brief}")
-        _COMPILED[creator_id] = tpl
-    return tpl.format(brief=brief, voice=voice, ctx=_CTX)
+    tpl = _TEMPLATES.get(creator_id, _DEFAULT_TEMPLATE)
+    # NOTE: do NOT use str.format here. The template string is creator-supplied,
+    # and str.format allows attribute/index traversal ({x.__class__...}) that
+    # escapes into module globals (e.g. auth._API_SECRET). We only ever expand
+    # the two known placeholders by literal substitution — no format engine, no
+    # object graph is ever exposed to the template author.
+    return tpl.replace("{voice}", voice).replace("{brief}", brief)

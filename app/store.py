@@ -3,8 +3,9 @@
 Prod backs this with Redis (anchors) + Postgres (items). Here it's in-memory.
 """
 import time
+from collections import deque
 from datetime import datetime
-from typing import Dict, List, Set
+from typing import Deque, Dict, List, Optional, Set
 
 from .models import Creative
 
@@ -12,6 +13,12 @@ _ITEMS: Dict[str, Creative] = {}
 _CREATOR_REFS: Dict[str, List[str]] = {}   # creator_id -> item_ids, primary (anchor) first
 _STYLE_ANCHOR: Dict[str, list] = {}        # item_id -> style_vector (mutated on regen)
 _USAGE: Dict[str, int] = {}                # creator_id -> generation count
+
+# Bounded recent-brief buffer for trend analysis. Bounded so it can't grow
+# without limit for the life of the process (an unbounded default arg here was
+# a slow memory leak). A monotonic counter tracks the total ever seen.
+_BRIEF_LOG: Deque[str] = deque(maxlen=1000)
+_BRIEF_SEEN = 0
 
 
 def save_item(c: Creative) -> None:
@@ -56,10 +63,12 @@ def get_references(creator_id: str, fanout: int) -> List[Creative]:
     return [_ITEMS[i] for i in chosen]
 
 
-def remember_brief(brief: str, _seen: list = []) -> int:
+def remember_brief(brief: str) -> int:
     """Record a brief for trend analysis; returns how many we've seen so far."""
-    _seen.append(brief)
-    return len(_seen)
+    global _BRIEF_SEEN
+    _BRIEF_LOG.append(brief)  # bounded: old entries evicted, no unbounded growth
+    _BRIEF_SEEN += 1
+    return _BRIEF_SEEN
 
 
 def increment_usage(creator_id: str) -> int:
@@ -75,9 +84,16 @@ def usage(creator_id: str) -> int:
     return _USAGE.get(creator_id, 0)
 
 
-def list_recent(offset: int, limit: int) -> List[Creative]:
-    """Paginate recent creatives, highest performance first."""
-    ranked = sorted(_ITEMS.values(), key=lambda c: c.performance, reverse=True)
+def list_recent(offset: int, limit: int, tenant: Optional[str] = None) -> List[Creative]:
+    """Paginate recent creatives (highest performance first), scoped to a tenant.
+
+    When `tenant` is given, only that tenant's items are returned — this is what
+    stops one tenant from reading another's work through /items.
+    """
+    items = _ITEMS.values()
+    if tenant is not None:
+        items = [c for c in items if c.tenant_id == tenant]
+    ranked = sorted(items, key=lambda c: c.performance, reverse=True)
     return ranked[offset:offset + limit]
 
 
