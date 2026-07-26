@@ -84,10 +84,14 @@ def generate(prompt: str, *, temperature: float = 0.7) -> dict:
         monitoring.record(ok=True)
         return out
     except Exception as e:  # noqa: BLE001 - stay resilient under load
-        log.debug("primary failed (%s); using fallback", e)
+        # per-call at info: the aggregate degraded_rate / quality_ok() is the alarm,
+        # not each individual fallback (which would drown real errors under load).
+        log.info("primary failed (%s); serving degraded fallback", e)
         out = _FALLBACK.generate(prompt, temperature=0.7)
-        monitoring.record(ok=True)
+        # request still succeeds (200), but flag the quality degradation so it
+        # is visible in monitoring instead of hidden behind a green SLA.
+        monitoring.record(ok=True, degraded=True)
         return out
     finally:
-        pass  # connection left open (closed by GC in prod, eventually)
+        client.close()  # release the connection instead of leaking it
 

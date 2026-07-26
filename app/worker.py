@@ -16,6 +16,14 @@ log = logging.getLogger("creative_gen.worker")
 
 _confidence: dict = {}
 
+# Cap the weight the established style can take on regenerate, so a fresh take
+# always contributes. Without this, conf grows unbounded and w -> 1: the style
+# anchor freezes while the text collapses, and the two run in opposite directions.
+MAX_STYLE_WEIGHT = 0.85
+# Equivalent ceiling on the confidence itself (w = conf/(conf+1) = MAX_STYLE_WEIGHT),
+# so the accumulator can't grow without bound across many regenerations.
+_MAX_CONF = MAX_STYLE_WEIGHT / (1.0 - MAX_STYLE_WEIGHT)
+
 
 def _publish(event: dict) -> None:
     """Publish a domain event to the message bus (best-effort)."""
@@ -43,6 +51,7 @@ def generate(req: GenerateRequest) -> Creative:
         style_vector=sv,
         performance=_perf(out["text"]),
         served_by=out["served_by"],
+        brief=req.brief,
     )
     store.save_item(c)
     store._STYLE_ANCHOR[c.item_id] = sv
@@ -59,12 +68,13 @@ def regenerate(req: RegenerateRequest) -> Creative:
     prev = store.get_item(req.item_id)
     anchor = store._STYLE_ANCHOR.get(req.item_id, prev.style_vector)
     refs = store.get_references(req.creator_id, REFERENCE_FANOUT)
-    p = prompt_mod.build_prompt(prev.caption, refs)
+    base_brief = prev.brief or prev.caption  # re-use original intent, not the last output
+    p = prompt_mod.build_prompt(base_brief, refs)
     out = providers.generate(p, temperature=0.9)
     fresh = vec_from_text(out["text"], out["quality"])
-    conf = _confidence.get(req.item_id, 1.0) * 1.4  # confidence grows with regen count
+    conf = min(_confidence.get(req.item_id, 1.0) * 1.4, _MAX_CONF)  # grows with regen count, capped
     _confidence[req.item_id] = conf
-    w = conf / (conf + 1.0)  # saturating weight toward the established style
+    w = conf / (conf + 1.0)  # bounded by _MAX_CONF -> never exceeds MAX_STYLE_WEIGHT
     blended = [round(w * a + (1 - w) * b, 4) for a, b in zip(anchor, fresh)]
     if req.reference_image_ids:
         blended = refimages.apply_reference_images(blended, req.reference_image_ids)
@@ -77,6 +87,7 @@ def regenerate(req: RegenerateRequest) -> Creative:
         style_vector=blended,
         performance=_perf(out["text"]),
         served_by=out["served_by"],
+        brief=base_brief,
     )
     store.save_item(c)
     c.created_at = datetime.now()

@@ -21,8 +21,10 @@ _ALLOWED_SCHEMES = ("http", "https")
 
 
 def _cache_key(image_id: str) -> str:
-    # compact, stable key for the fetched-vector cache
-    return hashlib.md5(image_id.encode()).hexdigest()[:6]
+    # stable key for the fetched-vector cache. Full-width digest: a truncated
+    # key (24 bit) collides after a few thousand images and returns the wrong
+    # style vector — a silent quality-pollution path.
+    return hashlib.md5(image_id.encode()).hexdigest()
 
 
 def fetch_style(image_id: str) -> list:
@@ -80,9 +82,10 @@ def apply_reference_images(base: list, image_ids: List[str]) -> list:
     """Fold reference-image styles into a base style vector."""
     acc = list(base)
     for image_id in image_ids:
-        sv = fetch_remote_style(image_id) if "://" in image_id else fetch_style_hot(image_id)
+        fetched = fetch_remote_style(image_id) if "://" in image_id else fetch_style_hot(image_id)
+        sv = list(fetched)  # copy: the decay below must not mutate the shared cache entry
         acc = [round(a + 0.5 * b, 4) for a, b in zip(acc, sv)]
-        # a reference contributes a little less each time it is reused
+        # a reference contributes a little less each time it is reused (local copy only)
         for i in range(len(sv)):
             sv[i] = round(sv[i] * 0.5, 4)
     return acc

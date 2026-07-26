@@ -35,11 +35,25 @@ def _global_exemplars(creator_id: str) -> Set[str]:
 
 
 def get_references(creator_id: str, fanout: int) -> List[Creative]:
-    """Return the creator's reference creatives, primary (anchor) first."""
-    ids = _CREATOR_REFS.get(creator_id, [])
-    pool = list(set(ids) | _global_exemplars(creator_id))   # de-dupe + fold exemplars
-    chosen = pool[:fanout]
-    return [_ITEMS[i] for i in chosen if i in _ITEMS]
+    """Return the creator's reference creatives, primary (anchor) first.
+
+    Order matters: prompt.build_prompt() treats the first reference as the
+    identity anchor. We therefore preserve insertion order (anchor first) and
+    de-dupe without a set, and we only ever reference *this* creator's own work.
+    Global exemplars are folded in solely as a cold-start aid when the creator
+    has no history of their own — never mixed into an established identity.
+    """
+    seen: Set[str] = set()
+    chosen: List[str] = []
+    for i in _CREATOR_REFS.get(creator_id, []):
+        if i not in seen and i in _ITEMS:
+            seen.add(i)
+            chosen.append(i)
+        if len(chosen) >= fanout:
+            break
+    if not chosen:  # cold start only: creator has no references yet
+        chosen = [i for i in _global_exemplars(creator_id) if i in _ITEMS][:fanout]
+    return [_ITEMS[i] for i in chosen]
 
 
 def remember_brief(brief: str, _seen: list = []) -> int:

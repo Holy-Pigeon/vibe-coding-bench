@@ -30,3 +30,4 @@ class Creative(BaseModel):
     performance: float = 0.0  # historical engagement score for this creative
     served_by: Optional[str] = None
     created_at: Optional[datetime] = None
+    brief: Optional[str] = None  # original brief, so regenerate re-uses intent (not its own output)
